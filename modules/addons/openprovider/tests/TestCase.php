@@ -19,7 +19,7 @@ class TestCase extends baseTestCase
      *
      * @return void
      */
-    protected function tearDown() {
+    protected function tearDown(): void {
         parent::tearDown();
 
         \Mockery::close();

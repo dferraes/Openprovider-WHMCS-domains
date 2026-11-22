@@ -3,13 +3,14 @@
 namespace OpenProvider\WhmcsRegistrar\Tests\Controllers\System;
 
 use Mockery;
-use OpenProvider\API\API;
+use OpenProvider\API\ApiInterface;
+use OpenProvider\API\Domain;
+use OpenProvider\API\Response;
 use OpenProvider\WhmcsRegistrar\Controllers\System\CheckAvailabilityController;
 use OpenProvider\WhmcsRegistrar\Tests\TestCase;
 use WeDevelopCoffee\wPower\Core\Core;
 use WHMCS\Domains\DomainLookup\ResultsList;
 use WHMCS\Domains\DomainLookup\SearchResult;
-use OpenProvider\API\Domain;
 
 
 /**
@@ -23,7 +24,7 @@ class CheckAvailabilityControllerTest extends TestCase
      */
     private $mockedCore;
     /**
-     * @var Mockery\MockInterface|API
+     * @var Mockery\MockInterface|ApiInterface
      */
     private $mockedAPI;
     /**
@@ -34,149 +35,93 @@ class CheckAvailabilityControllerTest extends TestCase
      * @var Mockery\MockInterface|Domain
      */
     private $mockedDomain;
-    /**
-     * @var Mockery\MockInterface|ResultsList
-     */
-    private $mockedResultsList;
-
     public function test_unavailable_domain()
     {
         // Prepare
-        list($params, $domain, $sld, $tld) = $this->prepareParamsAndDomain();
-
-        $returnResults = [];
-        $returnResults[] = [
-            'domain' => $domain,
-            'status' => 'free'
-        ];
-
-        // Mock
-        $this->mockedAPI->shouldReceive('setParams')
-            ->with($params)
-            ->once();
-
-        $this->mockedAPI->shouldReceive('checkDomainArray')
-            ->withAnyArgs()
-            ->once()
-            ->andReturn($returnResults);
-
-        // Execute
+        [$params, $domain, $sld, $tld] = $this->prepareParamsAndDomain();
+        $this->expectAvailability($sld, $tld, ['domain' => $domain, 'status' => 'active']);
         $result = $this->CheckAvailabilityController->check($params);
-
-        // Assert
-        $this->assertIsObject($result);
-        $this->assertInstanceOf( 'WHMCS\Domains\DomainLookup\ResultsList', $result);
+        $this->assertInstanceOf(ResultsList::class, $result);
+        $this->assertSame(SearchResult::STATUS_REGISTERED, $result->result[0]->status);
     }
 
     public function test_premium_domain_with_support_disabled_in_openprovider()
     {
         // Prepare
-        list($params, $domain, $sld, $tld) = $this->prepareParamsAndDomain();
-
-        $returnResults = [];
-        $returnResults[] = [
+        [$params, $domain, $sld, $tld] = $this->prepareParamsAndDomain();
+        $this->expectAvailability($sld, $tld, [
             'domain' => $domain,
             'premium' => true,
-            'status' => 'free'
-        ];
-
-        // Mock
-        $this->mockedAPI->shouldReceive('setParams')
-            ->with($params)
-            ->once();
-
-        $this->mockedAPI->shouldReceive('checkDomainArray')
-            ->withAnyArgs()
-            ->once()
-            ->andReturn($returnResults);
-
-        // Execute
+            'status' => 'free',
+        ]);
         $result = $this->CheckAvailabilityController->check($params);
-
-        // Assert
-        $this->assertIsObject($result);
-        $this->assertInstanceOf( 'WHMCS\Domains\DomainLookup\ResultsList', $result);
-        $this->assertEquals($result->result[0]->status, 3);
+        $this->assertSame(SearchResult::STATUS_RESERVED, $result->result[0]->status);
     }
 
     public function test_premium_domain_with_support_enabled_in_openprovider()
     {
         // Prepare
-        list($params, $domain, $sld, $tld) = $this->prepareParamsAndDomain();
+        [$params, $domain, $sld, $tld] = $this->prepareParamsAndDomain();
         $params['premiumEnabled'] = true;
         $params['OpenproviderPremium'] = true;
 
-        $returnResults = [];
-        $returnResults[] = [
+        $this->expectAvailability($sld, $tld, [
             'domain' => $domain,
             'premium' => true,
-            'status' => 'free'
-        ];
+            'status' => 'free',
+        ]);
 
-        $retrievePriceArgumentsCreate = [
-            'domain' => [
-                'name' => $sld,
-                'extension' => $tld
-            ],
-            'operation' => 'create'
-        ];
+        $args = ['domainName' => $sld, 'domainExtension' => $tld];
+        foreach (['create' => '123', 'transfer' => '200'] as $operation => $price) {
+            $response = new Response();
+            $response->setData(['price' => ['reseller' => ['price' => $price, 'currency' => 'EUR']]]);
+            $this->mockedAPI->shouldReceive('call')
+                ->with('retrievePriceDomainRequest', $args + ['operation' => $operation])
+                ->once()
+                ->andReturn($response);
+        }
 
-        $returnRetrievePriceArgumentsCreate ['price'] ['reseller'] ['price'] = '123';
-        $returnRetrievePriceArgumentsCreate ['price'] ['reseller'] ['currency'] = 'EUR';
-
-        $retrievePriceArgumentsTransfer = $retrievePriceArgumentsCreate;
-        $retrievePriceArgumentsTransfer ['operation'] = 'transfer';
-
-        // Expectations
-        $expectedPricing['register'] = $returnRetrievePriceArgumentsCreate ['price']['reseller']['price'];
-        $expectedPricing['renew'] = $returnRetrievePriceArgumentsCreate ['price']['reseller']['price'];
-        $expectedPricing['CurrencyCode'] = $returnRetrievePriceArgumentsCreate ['price']['reseller']['currency'];
-
-        // Mock
-        $this->mockedAPI->shouldReceive('setParams')
-            ->with($params)
-            ->once();
-
-        $this->mockedAPI->shouldReceive('sendRequest')
-            ->with('retrievePriceDomainRequest', $retrievePriceArgumentsCreate)
-            ->andReturn($returnRetrievePriceArgumentsCreate)
-            ->once();
-
-        $this->mockedAPI->shouldReceive('sendRequest')
-            ->with('retrievePriceDomainRequest', $retrievePriceArgumentsTransfer)
-            ->andReturn($returnRetrievePriceArgumentsCreate)
-            ->once();
-
-        $this->mockedAPI->shouldReceive('checkDomainArray')
-            ->withAnyArgs()
-            ->once()
-            ->andReturn($returnResults);
-
-        // Execute
         $result = $this->CheckAvailabilityController->check($params);
-
-        // Assert
-        $this->assertIsObject($result);
-        $this->assertInstanceOf( 'WHMCS\Domains\DomainLookup\ResultsList', $result);
-        $this->assertEquals($result->result[0]->status, 1);
-        $this->assertEquals($result->result[0]->premiumDomain, true);
-        $this->assertEquals($result->result[0]->premiumCostPricing, $expectedPricing);
+        $this->assertSame(SearchResult::STATUS_NOT_REGISTERED, $result->result[0]->status);
+        $this->assertTrue($result->result[0]->premiumDomain);
+        $this->assertSame([
+            'register' => '123',
+            'renew' => '200',
+            'transfer' => '200',
+            'CurrencyCode' => 'EUR',
+        ], $result->result[0]->premiumCostPricing);
     }
 
     /**
      * setUp
      *
      */
-    public function setUp ()
+    public function setUp(): void
     {
         $this->mockedCore = Mockery::mock(Core::class);
-        $this->mockedAPI = Mockery::mock(API::class);
-        $this->mockedResultsList = Mockery::mock(ResultsList::class);
+        $this->mockedAPI = Mockery::mock(ApiInterface::class);
         $this->mockedDomain = Mockery::mock(Domain::class);
-        $this->CheckAvailabilityController   = new CheckAvailabilityController($this->mockedCore,
-            $this->mockedAPI,
+        $this->CheckAvailabilityController = new CheckAvailabilityController(
+            $this->mockedCore,
             $this->mockedDomain,
-            $this->mockedResultsList);
+            $this->mockedAPI
+        );
+    }
+
+    private function expectAvailability(string $sld, string $tld, array $result): void
+    {
+        $response = new Response();
+        $response->setData(['results' => [$result]]);
+        $this->mockedAPI->shouldReceive('call')
+            ->with('checkDomainRequest', Mockery::on(static function (array $args) use ($sld, $tld): bool {
+                $domains = $args['domains'] ?? [];
+                return count($domains) === 1
+                    && $domains[0] instanceof Domain
+                    && $domains[0]->name === $sld
+                    && $domains[0]->extension === $tld;
+            }))
+            ->once()
+            ->andReturn($response);
     }
 
     /**

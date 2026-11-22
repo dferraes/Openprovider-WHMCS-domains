@@ -18,10 +18,10 @@ class SearchResult
     public $premiumDomain;
     public $premiumCostPricing;
 
-    public function __constrct($domain_sld, $domain_tld)
+    public function __construct($domain_sld, $domain_tld)
     {
         $this->domain_sld = $domain_sld;
-        $this->domain_tld = $domain_sld;
+        $this->domain_tld = $domain_tld;
     }
 
     public function setStatus($status)

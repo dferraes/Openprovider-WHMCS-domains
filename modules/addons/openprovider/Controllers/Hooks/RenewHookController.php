@@ -77,7 +77,7 @@ class RenewHookController extends BasePermissionController
             // Calculate the new +/- expiry date
             $new_expiry_date = new Carbon($domain->expirydate);
 
-            $new_expiry_date->addYears($params['params']);
+            $new_expiry_date->addYears((int) $params['params']['regperiod']);
 
             $scheduled_domain_renewal = $this->scheduledDomainRenewal;
             $scheduled_domain_renewal->domain_id = $domain->id;
@@ -176,9 +176,9 @@ class RenewHookController extends BasePermissionController
         }
 
         $openprovider_api_domain = $this->openprovider_domain;
-        $openprovider_api_domain->name = explode('.', $scheduled_domain_transfer->domain)[0];
+        $openprovider_api_domain->name = explode('.', $domain->domain)[0];
         $openprovider_api_domain->extension = str_replace($openprovider_api_domain->name . '.', '',
-            $scheduled_domain_transfer->domain);
+            $domain->domain);
 
         try {
             $openprovider_domain = $this->openProvider->api->retrieveDomainRequest($openprovider_api_domain);

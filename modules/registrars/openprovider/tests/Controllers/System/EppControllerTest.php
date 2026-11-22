@@ -3,145 +3,64 @@
 namespace OpenProvider\WhmcsRegistrar\Tests\Controllers\System;
 
 use Mockery;
-use OpenProvider\API\API;
+use OpenProvider\API\ApiHelper;
 use OpenProvider\API\Domain;
-use OpenProvider\WhmcsRegistrar\Controllers\System\CronController;
 use OpenProvider\WhmcsRegistrar\Controllers\System\EppController;
 use OpenProvider\WhmcsRegistrar\Tests\TestCase;
 use WeDevelopCoffee\wPower\Core\Core;
-use WeDevelopCoffee\wPower\Handles\Models\Handle;
 use WHMCS\Domains\DomainLookup\DomainObj;
 
-/**
- * Class TestConfigController
- * @package OpenProvider\WhmcsRegistrar\Tests\Controllers\System
- */
 class EppControllerTest extends TestCase
 {
-    /**
-     * @var Mockery\MockInterface|Core
-     */
-    private $mockedCore;
-    /**
-     * @var Mockery\MockInterface|API
-     */
-    private $mockedAPI;
-    /**
-     * @var ConfigController
-     */
-    private $EppController;
-    /**
-     * @var Mockery\MockInterface|Domain
-     */
-    public $mockedDomain;
+    private ApiHelper $apiHelper;
+    private EppController $controller;
+    private array $domainParams;
 
-    public function test_get_epp_code()
+    protected function setUp(): void
     {
-        $eppCode = 'some-epp-code';
-        $params = $this->prep_fetch_epp_code();
+        $this->apiHelper = Mockery::mock(ApiHelper::class);
+        $this->controller = new EppController(Mockery::mock(Core::class), new Domain(), $this->apiHelper);
 
-        // Mock
-        $this->mockedAPI->shouldReceive('getEPPCode')
-            ->with($this->mockedDomain)
-            ->once()
-            ->andReturn($eppCode);
-
-        // Expectations
-        $expectedResult["eppcode"] = $eppCode;
-
-        // Execute
-        $result = $this->EppController->get($params);
-
-        // Assert
-        $this->assertEquals($expectedResult, $result);
+        $domain = new DomainObj();
+        $domain->setSecondLevel($this->params['sld']);
+        $domain->setTopLevel($this->params['tld']);
+        $this->domainParams = $this->params;
+        $this->domainParams['original']['domainObj'] = $domain;
     }
 
-    public function test_failed_get_epp_code()
+    public function test_get_epp_code(): void
     {
-        // Config
-        $eppCode = '';
-        $params = $this->prep_fetch_epp_code();
+        $this->apiHelper->shouldReceive('getDomain')->with($this->requestedDomain())->once()
+            ->andReturn(['id' => 17, 'authCode' => 'some-epp-code']);
+        $this->apiHelper->shouldNotReceive('getEppCode');
 
-        // Mock
-        $this->mockedAPI->shouldReceive('getEPPCode')
-            ->with($this->mockedDomain)
-            ->once()
-            ->andReturn($eppCode);
-
-        // Expectations
-        $expectedResult["error"] = 'EPP code is not set';
-
-        // Execute
-        $result = $this->EppController->get($params);
-
-        // Assert
-        $this->assertEquals($expectedResult, $result);
+        $this->assertSame(['eppcode' => 'some-epp-code'], $this->controller->get($this->domainParams));
     }
 
-    public function test_failed_request_to_registrar_to_get_epp_code()
+    public function test_failed_get_epp_code(): void
     {
-        // Config
-        $eppCode = '';
-        $params = $this->prep_fetch_epp_code();
-        $some_error_message = 'some-error-message';
+        $this->apiHelper->shouldReceive('getDomain')->with($this->requestedDomain())->once()
+            ->andReturn(['id' => 17, 'authCode' => '']);
+        $this->apiHelper->shouldReceive('getEppCode')->with(17)->once()
+            ->andThrow(\Exception::class, 'EPP code is not set');
 
-        // Mock
-        $this->mockedAPI->shouldReceive('getEPPCode')
-            ->with($this->mockedDomain)
-            ->once()
-            ->andThrow(\Exception::class, $some_error_message);
-
-        // Expectations
-        $expectedResult["error"] = $some_error_message;
-
-        // Execute
-        $result = $this->EppController->get($params);
-
-        // Assert
-        $this->assertEquals($expectedResult, $result);
+        $this->assertSame(['error' => 'EPP code is not set'], $this->controller->get($this->domainParams));
     }
 
-
-    /**
-     * setUp
-     *
-     */
-    public function setUp ()
+    public function test_failed_request_to_registrar_to_get_epp_code(): void
     {
-        $this->mockedCore = Mockery::mock(Core::class);
-        $this->mockedAPI = Mockery::mock(API::class);
-        $this->mockedDomain = Mockery::mock(Domain::class);
-        $this->EppController   = new EppController($this->mockedCore, $this->mockedAPI, $this->mockedDomain);
+        $this->apiHelper->shouldReceive('getDomain')->with($this->requestedDomain())->once()
+            ->andThrow(\Exception::class, 'Some error message');
+        $this->apiHelper->shouldNotReceive('getEppCode');
+
+        $this->assertSame(['error' => 'Some error message'], $this->controller->get($this->domainParams));
     }
 
-    /**
-     * @return array
-     */
-    protected function prep_fetch_epp_code()
+    private function requestedDomain()
     {
-        // Config
-        $params = $this->params;
-
-        $domainObj = new DomainObj();
-        $domainObj->setSecondLevel($params['sld']);
-        $domainObj->setTopLevel($params['tld']);
-
-        $params['original']['domainObj'] = $domainObj;
-
-
-        // Mock
-        $this->mockedDomain->shouldReceive('load')
-            ->with([
-                'name' => $params['sld'],
-                'extension' => $params['tld']
-            ])
-            ->once()
-            ->andReturn($this->mockedDomain);
-
-        $this->mockedAPI->shouldReceive('setParams')
-            ->with($params)
-            ->once();
-
-        return $params;
+        return Mockery::on(function (Domain $domain): bool {
+            return $domain->name === $this->domainParams['sld']
+                && $domain->extension === $this->domainParams['tld'];
+        });
     }
 }
