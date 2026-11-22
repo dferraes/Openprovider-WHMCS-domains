@@ -3,124 +3,64 @@
 namespace OpenProvider\WhmcsRegistrar\Tests\Controllers\System;
 
 use Mockery;
-use OpenProvider\API\API;
+use OpenProvider\API\ApiHelper;
 use OpenProvider\API\Domain;
 use OpenProvider\WhmcsRegistrar\Controllers\System\ContactController;
 use OpenProvider\WhmcsRegistrar\Tests\TestCase;
-use WeDevelopCoffee\wPower\Core\Core;
 use OpenProvider\WhmcsRegistrar\src\Handle;
+use WeDevelopCoffee\wPower\Core\Core;
 use WHMCS\Domains\DomainLookup\DomainObj;
 
-/**
- * Class TestConfigController
- * @package OpenProvider\WhmcsRegistrar\Tests\Controllers\System
- */
 class ContactControllerTest extends TestCase
 {
-    /**
-     * @var Mockery\MockInterface|Core
-     */
-    private $mockedCore;
-    /**
-     * @var Mockery\MockInterface|API
-     */
-    private $mockedAPI;
-    /**
-     * @var ConfigController
-     */
-    private $ContactController;
-    /**
-     * @var Mockery\MockInterface|Handle
-     */
-    public $mockedHandle;
-    /**
-     * @var Mockery\MockInterface|Domain
-     */
-    public $mockedDomain;
+    private ApiHelper $apiHelper;
+    private ContactController $controller;
+    private array $domainParams;
 
-    public function test_get_details()
+    protected function setUp(): void
     {
-        // Configure
-        $params = $this->params;
+        $this->apiHelper = Mockery::mock(ApiHelper::class);
+        $this->controller = new ContactController(
+            Mockery::mock(Core::class),
+            new Domain(),
+            Mockery::mock(Handle::class),
+            $this->apiHelper
+        );
 
-        $domainObj = new DomainObj();
-        $domainObj->setSecondLevel($params['sld']);
-        $domainObj->setTopLevel($params['tld']);
-
-        $params['original']['domainObj'] = $domainObj;
-
-        $returnValue = ['some-data'];
-
-        // Expectations
-        $expectedResult = $returnValue;
-
-        // Mocks
-        $this->mockedDomain->shouldReceive('load')
-            ->with([
-                'name' => $params['sld'],
-                'extension' => $params['tld']
-            ])
-            ->once()
-            ->andReturn($this->mockedDomain);
-
-        $this->mockedAPI->shouldReceive('setParams')
-            ->with($params)
-            ->once();
-
-        $this->mockedAPI->shouldReceive('getContactDetails')
-            ->with($this->mockedDomain)
-            ->andReturn($returnValue);
-
-        // Execute
-        $result = $this->ContactController->getDetails($params);
-
-        // Assert
-        $this->assertEquals($expectedResult, $result);
+        $domain = new DomainObj();
+        $domain->setSecondLevel($this->params['sld']);
+        $domain->setTopLevel($this->params['tld']);
+        $this->domainParams = $this->params;
+        $this->domainParams['original']['domainObj'] = $domain;
     }
 
-    public function test_get_exception_when_getting_contact_details()
+    public function test_get_details(): void
     {
-        // Configure
-        $params = $this->params;
+        $owner = ['Country' => 'MX', 'State' => 'Example'];
+        $this->apiHelper->shouldReceive('getDomain')->with($this->requestedDomain())->once()
+            ->andReturn(['ownerHandle' => 'owner-test', 'billingHandle' => 'billing-test']);
+        $this->apiHelper->shouldReceive('getTldMeta')->with('com')->once()
+            ->andReturn(['ownerHandleSupported' => true, 'billingHandleSupported' => false]);
+        $this->apiHelper->shouldReceive('getCustomersAsync')->with(['Owner' => 'owner-test'])->once()
+            ->andReturn(['Owner' => $owner]);
 
-        $domainObj = new DomainObj();
-        $domainObj->setSecondLevel($params['sld']);
-        $domainObj->setTopLevel($params['tld']);
-
-        $params['original']['domainObj'] = $domainObj;
-
-        $errorMessage = 'some-error';
-
-        // Expectations
-        $expectedResult = ['error' => $errorMessage];
-
-        // Mocks
-        $this->mockedDomain->shouldReceive('load')
-            ->with([
-                'name' => $params['sld'],
-                'extension' => $params['tld']
-            ])
-            ->once()
-            ->andThrow(\Exception::class, $errorMessage);
-
-        // Execute
-        $result = $this->ContactController->getDetails($params);
-
-        // Assert
-        $this->assertEquals($expectedResult, $result);
+        $this->assertSame(['Owner' => $owner], $this->controller->getDetails($this->domainParams));
     }
 
-
-    /**
-     * setUp
-     *
-     */
-    public function setUp ()
+    public function test_get_exception_when_getting_contact_details(): void
     {
-        $this->mockedCore = Mockery::mock(Core::class);
-        $this->mockedAPI = Mockery::mock(API::class);
-        $this->mockedDomain = Mockery::mock(Domain::class);
-        $this->mockedHandle = Mockery::mock(Handle::class);
-        $this->ContactController   = new ContactController($this->mockedCore, $this->mockedAPI, $this->mockedDomain, $this->mockedHandle);
+        $this->apiHelper->shouldReceive('getDomain')->with($this->requestedDomain())->once()
+            ->andThrow(\Exception::class, 'Some error message');
+        $this->apiHelper->shouldNotReceive('getCustomersAsync');
+
+        $this->assertSame(['error' => 'Some error message'], $this->controller->getDetails($this->domainParams));
+    }
+
+    private function requestedDomain()
+    {
+        return Mockery::on(function (Domain $domain): bool {
+            return $domain->name === $this->domainParams['sld']
+                && $domain->extension === $this->domainParams['tld'];
+        });
     }
 }

@@ -83,7 +83,7 @@ class RenewHookControllerTest extends TestCase
 
         $result = $this->RenewHookController->processRenewal($params);
 
-        $this->assertTrue($result);
+        $this->assertSame(['success' => true], $result);
     }
 
     public function test_renewal_with_other_registrar_scheduled_for_transfer()
@@ -91,10 +91,13 @@ class RenewHookControllerTest extends TestCase
         $test_domain = 'somedomain.com';
         $test_domain_id = 2;
         $params ['params']['domainid'] = $test_domain_id;
+        $params ['params']['regperiod'] = '2';
 
         $result_class = $this->mockedScheduledDomainRenewal;
         $result_class->domain = $test_domain;
         $result_class->registrar = 'other registrar';
+        $result_class->id = $test_domain_id;
+        $result_class->expirydate = '2099-06-15';
 
         $mock_scheduled_domain_return = new \stdClass();
         $mock_scheduled_domain_return->status = 'SCH';
@@ -108,6 +111,9 @@ class RenewHookControllerTest extends TestCase
 
         $this->mockedScheduledDomainRenewal
             ->shouldReceive('save')
+            ->once();
+        $this->mockedApi->shouldReceive('modifyScheduledTransferDate')
+            ->with($this->mockedOpenproviderDomain, Mockery::type('string'))
             ->once();
 
         $this->mockedScheduledDomainTransfer
@@ -124,6 +130,7 @@ class RenewHookControllerTest extends TestCase
         $result = $this->RenewHookController->processRenewal($params);
 
         $this->assertEquals($result, $expected_result);
+        $this->assertSame('2101-06-15', $this->mockedScheduledDomainRenewal->new_expiry_date->toDateString());
     }
 
     public function test_renewal_with_other_registrar_scheduled_for_transfer_but_not_stored_in_local_table()
@@ -131,10 +138,13 @@ class RenewHookControllerTest extends TestCase
         $test_domain = 'somedomain.com';
         $test_domain_id = 2;
         $params ['params']['domainid'] = $test_domain_id;
+        $params ['params']['regperiod'] = 1;
 
         $result_class = $this->mockedScheduledDomainRenewal;
         $result_class->domain = $test_domain;
         $result_class->registrar = 'other registrar';
+        $result_class->id = $test_domain_id;
+        $result_class->expirydate = '2099-06-15';
 
         $mock_scheduled_domain_return = new \stdClass();
         $mock_scheduled_domain_return->status = 'SCH';
@@ -162,8 +172,13 @@ class RenewHookControllerTest extends TestCase
             ->andThrow(ModelNotFoundException::class, 'MODEL NOT FOUND');
 
         $this->mockedApi->shouldReceive('retrieveDomainRequest')
-            ->with(Mockery::any())
+            ->with(Mockery::on(static function ($domain): bool {
+                return $domain->name === 'somedomain' && $domain->extension === 'com';
+            }))
             ->andReturn($openprovider_api_response)
+            ->once();
+        $this->mockedApi->shouldReceive('modifyScheduledTransferDate')
+            ->with($this->mockedOpenproviderDomain, Mockery::type('string'))
             ->once();
 
         $this->mockedOpenproviderDomain
@@ -322,7 +337,7 @@ class RenewHookControllerTest extends TestCase
      * setUp
      *
      */
-    public function setUp()
+    public function setUp(): void
     {
         $this->mockedCore = Mockery::mock(Core::class);
         $this->mockedScheduledDomainTransfer = Mockery::mock(ScheduledDomainTransfer::class);
@@ -343,7 +358,7 @@ class RenewHookControllerTest extends TestCase
         );
     }
 
-    public function tearDown()
+    public function tearDown(): void
     {
         // Add Mockery results.
         $this->addToAssertionCount(

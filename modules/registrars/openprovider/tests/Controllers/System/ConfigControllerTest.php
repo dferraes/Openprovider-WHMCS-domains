@@ -2,173 +2,139 @@
 
 namespace OpenProvider\WhmcsRegistrar\Tests\Controllers\System;
 
+use Carbon\Carbon;
 use Mockery;
-use OpenProvider\API\API;
+use Mockery\MockInterface;
+use OpenProvider\API\ApiConfiguration;
+use OpenProvider\API\ApiInterface;
+use OpenProvider\API\Response;
 use OpenProvider\WhmcsRegistrar\Controllers\System\ConfigController;
+use OpenProvider\WhmcsRegistrar\helpers\Cache;
+use OpenProvider\WhmcsRegistrar\src\Configuration;
 use OpenProvider\WhmcsRegistrar\Tests\TestCase;
+use Symfony\Component\HttpFoundation\Session\Session;
+use Symfony\Component\HttpFoundation\Session\Storage\MockArraySessionStorage;
 use WeDevelopCoffee\wPower\Core\Core;
+use WeDevelopCoffee\wPower\Models\Registrar;
+use WHMCS\Database\Capsule;
 
 /**
- * Class TestConfigController
- * @package OpenProvider\WhmcsRegistrar\Tests\Controllers\System
+ * Each test defines doubles for the classes normally supplied by WHMCS.
+ *
+ * @runTestsInSeparateProcesses
+ * @preserveGlobalState disabled
  */
 class ConfigControllerTest extends TestCase
 {
-    /**
-     * @var Mockery\MockInterface|Core
-     */
-    private $mockedCore;
-    /**
-     * @var Mockery\MockInterface|API
-     */
-    private $mockedAPI;
-    /**
-     * @var ConfigController
-     */
-    private $ConfigController;
+    private MockInterface $api;
+    private MockInterface $capsule;
+    private MockInterface $tokens;
+    private ApiConfiguration $configuration;
+    private ConfigController $controller;
 
-    public function test_return_config_with_failed_login()
+    protected function setUp(): void
     {
-        // Configure
+        define('SESSION_EXPIRATION_LIFE_TIME', 300);
+        define('AUTH_TOKEN_EXPIRATION_LIFE_TIME', 1);
+        Carbon::setTestNow('2026-01-01 00:00:00');
+        $_REQUEST = [];
+        $_SERVER['SCRIPT_FILENAME'] = '/fixture/admin/configregistrars.php';
+        $this->params['test_mode'] = 'off';
 
-        // Mock
-        $this->mockedAPI->shouldReceive('setParams')
-            ->with($this->params)
-            ->once();
+        Mockery::mock('overload:' . Registrar::class)->shouldReceive('getRegistrarData')
+            ->once()->andReturn(['openprovider' => $this->params]);
+        $this->capsule = Mockery::mock('alias:' . Capsule::class);
+        $this->tokens = Mockery::mock();
 
-        $this->mockedAPI->shouldReceive('searchTemplateDnsRequest')
-            ->andThrow(\Exception::class)
-            ->once();
+        $this->configuration = new ApiConfiguration();
+        $this->configuration->setHost(Configuration::get('api_url'));
+        $this->api = Mockery::mock(ApiInterface::class);
+        $this->api->shouldReceive('getConfiguration')->andReturn($this->configuration);
 
-        // Execute
-        $result = $this->ConfigController->getConfig($this->params);
-
-        // Assert
-        $this->assertIsArray($result);
-
-        $this->assertContains('Tomato', $result['OpenproviderAPI']['FriendlyName']);
+        $session = new Session(new MockArraySessionStorage());
+        $session->start();
+        $this->controller = new ConfigController(Mockery::mock(Core::class), $session, $this->api);
     }
 
-    public function test_return_config_with_successful_login()
+    public function test_return_config_with_failed_login(): void
     {
-        // Configure
-        $templates = [
-            'total' => 2,
-            'results' => [
-                0 => [
-                    'name' => 'name-1'
-                ],
-                1 => [
-                    'name' => 'name-2'
-                ]
-            ]
-        ];
+        $this->expectTokenLookup(null);
+        $this->api->shouldReceive('call')
+            ->with('generateAuthTokenRequest', ['username' => $this->params['Username'], 'password' => $this->params['Password']])
+            ->once()->andReturn(new Response());
 
-        // Mock
-        $this->mockedAPI->shouldReceive('setParams')
-            ->with($this->params)
-            ->once();
+        $configuration = $this->controller->getConfig($this->params);
 
-        $this->mockedAPI->shouldReceive('searchTemplateDnsRequest')
-            ->andReturn($templates)
-            ->once();
-
-        // Execute
-        $result = $this->ConfigController->getConfig($this->params);
-
-        // Assert
-        $this->assertIsArray($result);
-
-        $this->assertNotContains('Tomato', $result['OpenproviderAPI']['FriendlyName']);
-        $this->assertEquals('None,name-1,name-2', $result['dnsTemplate']['Options']);
+        $this->assertStringContainsString(ConfigController::ERROR_INCORRECT_CREDENTIALS, $configuration[0]['Description']);
+        $this->assertSame('', $this->configuration->getToken());
     }
 
-    public function test_if_cache_is_used()
+    public function test_return_config_with_successful_login(): void
     {
-        // Configure
-        $templates = [
-            'total' => 2,
-            'results' => [
-                0 => [
-                    'name' => 'name-1'
-                ],
-                1 => [
-                    'name' => 'name-2'
-                ]
-            ]
-        ];
+        $this->expectTokenLookup(null);
+        $this->expectTokenCreation($this->params['Username'], $this->params['Password']);
 
-        // Mock cache
-        $GLOBALS['op_registrar_module_config_dnsTemplate'] = [
-            'Options' => 'None,name-1,name-2'
-        ];
+        $configuration = $this->controller->getConfig($this->params);
 
-        // Mock
-        // No mocks needed as we are testing the cache.
-
-        // Execute
-        $result = $this->ConfigController->getConfig($this->params);
-
-        // Assert
-        $this->assertIsArray($result);
-
-        $this->assertNotContains('Tomato', $result['OpenproviderAPI']['FriendlyName']);
-        $this->assertEquals('None,name-1,name-2', $result['dnsTemplate']['Options']);
+        $this->assertSame($this->controller->getConfigArray(), $configuration);
+        $this->assertSame('fixture-token', $this->configuration->getToken());
     }
 
-    public function test_return_config_with_request_data_and_a_successful_login()
+    public function test_if_cache_is_used(): void
     {
-        // Configure
-        $templates = [
-            'total' => 2,
-            'results' => [
-                0 => [
-                    'name' => 'name-1'
-                ],
-                1 => [
-                    'name' => 'name-2'
-                ]
-            ]
-        ];
+        $this->expectTokenLookup((object) ['expire_at' => '2026-01-02 00:00:00']);
+        Cache::set('op_auth_generate', new Response());
+        $this->api->shouldReceive('call')->with('searchPromoMessageRequest', [])->once()->andReturn(new Response());
 
-        $_REQUEST['action'] = 'save';
-        $_SERVER['SCRIPT_FILENAME'] = '/var/www/html/configregistrars.php';
-        $_REQUEST['Username'] = 'username2';
-        $_REQUEST['Password'] = 'password2';
+        $configuration = $this->controller->getConfig($this->params);
 
-        $params = $this->params;
-        $params['Username'] = $_REQUEST['Username'];
-        $params['Password'] = $_REQUEST['Password'];
-
-        // Mock
-        $this->mockedAPI->shouldReceive('setParams')
-            ->with($params)
-            ->once();
-
-        $this->mockedAPI->shouldReceive('searchTemplateDnsRequest')
-            ->andReturn($templates)
-            ->once();
-
-        // Execute
-        $result = $this->ConfigController->getConfig($this->params);
-
-        // Assert
-        $this->assertIsArray($result);
-
-        $this->assertNotContains('Tomato', $result['OpenproviderAPI']['FriendlyName']);
-        $this->assertEquals('None,name-1,name-2', $result['dnsTemplate']['Options']);
+        $this->assertSame($this->controller->getConfigArray(), $configuration);
+        $this->assertFalse(Cache::has('op_auth_generate'));
     }
 
-    /**
-     * setUp
-     *
-     */
-    public function setUp ()
+    public function test_return_config_with_request_data_and_a_successful_login(): void
     {
-        $this->mockedCore = Mockery::mock(Core::class);
-        $this->mockedAPI = Mockery::mock(API::class);
-        $this->ConfigController   = new ConfigController($this->mockedCore, $this->mockedAPI);
+        $_REQUEST = ['action' => 'save', 'Username' => 'fixture-user', 'Password' => '***masked'];
+        $this->expectTokenLookup(null);
+        $this->capsule->shouldReceive('table')->with('reseller_tokens')->once()->andReturn($this->tokens);
+        $this->tokens->shouldReceive('where')->with('username', $this->params['Username'])->once()->andReturnSelf();
+        $this->tokens->shouldReceive('delete')->once()->andReturn(1);
+        $this->expectTokenCreation('fixture-user', $this->params['Password']);
 
-        unset($GLOBALS['op_registrar_module_config_dnsTemplate']);
+        $configuration = $this->controller->getConfig($this->params);
+
+        $this->assertSame($this->controller->getConfigArray(), $configuration);
+        $this->assertSame('fixture-token', $this->configuration->getToken());
+    }
+
+    private function expectTokenLookup(?object $row): void
+    {
+        $schema = Mockery::mock();
+        $schema->shouldReceive('hasTable')->with('reseller_tokens')->once()->andReturn($row !== null);
+        $this->capsule->shouldReceive('schema')->once()->andReturn($schema);
+
+        if ($row !== null) {
+            $this->capsule->shouldReceive('table')->with('reseller_tokens')->once()->andReturn($this->tokens);
+            $this->tokens->shouldReceive('where')->with('username', $this->params['Username'])->once()->andReturnSelf();
+            $this->tokens->shouldReceive('orderBy')->with('created_at', 'desc')->once()->andReturnSelf();
+            $this->tokens->shouldReceive('first')->once()->andReturn($row);
+        }
+    }
+
+    private function expectTokenCreation(string $username, string $password): void
+    {
+        $response = new Response();
+        $response->setData(['token' => 'fixture-token']);
+        $this->api->shouldReceive('call')->with('generateAuthTokenRequest', ['username' => $username, 'password' => $password])
+            ->once()->andReturn($response);
+        $this->capsule->shouldReceive('table')->with('reseller_tokens')->twice()->andReturn($this->tokens);
+        $this->tokens->shouldReceive('where')->with('username', $username)->once()->andReturnSelf();
+        $this->tokens->shouldReceive('delete')->once()->andReturn(1);
+        $this->tokens->shouldReceive('insert')->with([
+            'username' => $username,
+            'token' => 'fixture-token',
+            'expire_at' => '2026-01-02 00:00:00',
+            'created_at' => '2026-01-01 00:00:00',
+        ])->once()->andReturn(true);
     }
 }

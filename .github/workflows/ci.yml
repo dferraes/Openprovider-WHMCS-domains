@@ -1,0 +1,53 @@
+name: PHPUnit
+
+on:
+  push:
+    branches: [master, develop]
+  pull_request:
+    branches: [master, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tests:
+    name: Registrar and addon
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, personal]
+    timeout-minutes: 15
+    container:
+      image: php:8.4-cli@sha256:6b13a8678b38ca38e4e3950be57b664ed8c8706131a0586111f68792aede4c58
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends ca-certificates curl git unzip
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Composer and locked dependencies
+        env:
+          COMPOSER_VERSION: "2.11.2"
+          COMPOSER_SHA256: dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25d028
+          COMPOSER_ALLOW_SUPERUSER: "1"
+        run: |
+          curl -fsSL "https://getcomposer.org/download/$COMPOSER_VERSION/composer.phar" -o "$RUNNER_TEMP/composer.phar"
+          printf '%s  %s\n' "$COMPOSER_SHA256" "$RUNNER_TEMP/composer.phar" | sha256sum --check -
+          php "$RUNNER_TEMP/composer.phar" install --working-dir=modules/addons/openprovider --no-interaction --prefer-dist --no-plugins --no-scripts
+          php "$RUNNER_TEMP/composer.phar" install --working-dir=modules/registrars/openprovider --no-interaction --prefer-dist --no-plugins --no-scripts
+
+      - name: Run both PHPUnit suites
+        run: |
+          # Legacy bundled PHP-DI emits deprecations in isolated PHPUnit processes.
+          printf '%s\n' 'error_reporting = E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED' > "$PHP_INI_DIR/conf.d/99-phpunit.ini"
+          status=0
+          (cd modules/addons/openprovider && php vendor/bin/phpunit --fail-on-risky --fail-on-warning --do-not-cache-result) || status=1
+          (cd modules/registrars/openprovider && php vendor/bin/phpunit --fail-on-risky --fail-on-warning --do-not-cache-result) || status=1
+          exit "$status"

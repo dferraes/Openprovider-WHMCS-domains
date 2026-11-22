@@ -69,7 +69,9 @@ class SynchroniseControllerTest extends TestCase
             ->andReturn([
                 'results' => null,
                 'total' => '0'
-            ]);
+            ])
+            ->once();
+        $this->mockedScheduledDomainTransfer->shouldNotReceive('firstOrNew');
 
         // Perform the test
         $this->SynchroniseController->updateScheduledDomainTransferTable();
@@ -106,9 +108,11 @@ class SynchroniseControllerTest extends TestCase
             ->shouldReceive('firstOrNew')
             ->with(['domain' => $test_domain])
             ->andReturn($this->mockedScheduledDomainTransfer)
-            ->shouldReceive('save');
+            ->shouldReceive('save')
+            ->once();
 
         $this->SynchroniseController->updateScheduledDomainTransferTable();
+        $this->assertSame('SCH', $this->mockedScheduledDomainTransfer->status);
     }
 
     public function test_empty_linkDomainsToWhmcsDomains(): void
@@ -178,7 +182,7 @@ class SynchroniseControllerTest extends TestCase
             ->with('domain', $test_domain)
             ->andReturn($this->mockedDomain)
             ->shouldReceive('firstOrFail')
-            ->andReturn($this->mockedScheduledDomainTransfer)
+            ->andReturn((object) ['id' => $test_domain_id])
             ->once();
 
         $this->mockedScheduledDomainTransfer
@@ -227,11 +231,11 @@ class SynchroniseControllerTest extends TestCase
 
         $openprovider_return_array = [
             'status' => 'ACT',
-            'expirationDate' => '2099-09-09'
+            'renewalDate' => '2099-09-09'
         ];
 
-        $this->mockedScheduledDomainTransfer->shouldReceive('whereRaw')
-            ->with('DATE(cron_run_date) <> DATE(NOW())')
+        $this->mockedScheduledDomainTransfer->shouldReceive('where')
+            ->with('run_id', '!=', Mockery::type('int'))
             ->andReturn($this->mockedScheduledDomainTransfer)
             ->shouldReceive('where')
             ->with('domain_id', '!=', null)
@@ -269,6 +273,9 @@ class SynchroniseControllerTest extends TestCase
 
         // Perform the test
         $this->SynchroniseController->processNotUpdatedDomains();
+        $this->assertSame('openprovider', $this->mockedDomain->registrar);
+        $this->assertSame('Active', $this->mockedDomain->status);
+        $this->assertSame('2099-09-09', $this->mockedDomain->expirydate);
     }
 
     public function test_processDomainsWithDisabledAutorenewal(): void
@@ -281,7 +288,7 @@ class SynchroniseControllerTest extends TestCase
             ->shouldReceive('get')
             ->andReturn([]);;// Should be class Illuminate\Database\Eloquent\Collection
 
-        $this->SynchroniseController->processDomainsWithDisabledAutorenewal();
+        $this->assertTrue($this->SynchroniseController->processDomainsWithDisabledAutorenewal());
     }
 
     public function test_one_domain_processDomainsWithDisabledAutorenewal(): void
@@ -291,6 +298,7 @@ class SynchroniseControllerTest extends TestCase
         $this->mockedScheduledDomainTransfer->domain_id = $test_domain_id;
         $this->mockedScheduledDomainTransfer->domain = $test_domain;
         $this->mockedScheduledDomainTransfer->status = 'SCH';
+        $this->mockedDomain->status = 'Active';
 
         $result_items = [
             0 => $this->mockedScheduledDomainTransfer
@@ -315,6 +323,16 @@ class SynchroniseControllerTest extends TestCase
             ->shouldReceive('get')
             ->andReturn($result_items);;// Should be class Illuminate\Database\Eloquent\Collection
 
+        $this->mockedApi->shouldReceive('retrieveDomainRequest')->once()
+            ->with($this->mockedOpenproviderDomain)
+            ->andReturn(['status' => 'PEN']);
+        $this->mockedOpenproviderDomain->shouldReceive('convertOpStatusToWhmcs')
+            ->with('PEN')->once()->andReturn('Pending');
+        $this->mockedApi->shouldReceive('requestDelete')->once()
+            ->with(Mockery::on(static function ($domain): bool {
+                return $domain->name === 'testdomain' && $domain->extension === 'com';
+            }));
+        $this->mockedScheduledDomainTransfer->shouldReceive('delete')->once();
         $this->SynchroniseController->processDomainsWithDisabledAutorenewal();
     }
 
@@ -322,7 +340,7 @@ class SynchroniseControllerTest extends TestCase
      * setUp
      *
      */
-    public function setUp()
+    public function setUp(): void
     {
         $this->mockedCore = Mockery::mock(Core::class);
         $this->mockedDomain = Mockery::mock(Domain::class);
@@ -343,7 +361,7 @@ class SynchroniseControllerTest extends TestCase
         );
     }
 
-    public function tearDown()
+    public function tearDown(): void
     {
         // Add Mockery results.
         $this->addToAssertionCount(
